@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTPGetr — one-time code helper</title>
+<style>
+  :root{
+    --bg:#f7f8f7; --card:#ffffff; --ink:#12241a; --muted:#4b5a52;
+    --accent:#16a34a; --line:#e2e8e4;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#0e1512; --card:#141c18; --ink:#e8efeb; --muted:#9fb0a8; --line:#243029; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6;}
+  .wrap{max-width:720px;margin:0 auto;padding:48px 22px 64px;}
+  header{display:flex;align-items:center;gap:16px;margin-bottom:8px;}
+  .logo{width:56px;height:56px;flex:none;}
+  h1{font-size:1.9rem;margin:0;letter-spacing:-.02em;}
+  .tag{color:var(--muted);margin:.2rem 0 0;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:24px 26px;margin-top:28px;}
+  h2{font-size:1.15rem;margin:0 0 .5rem;letter-spacing:-.01em;}
+  p{margin:.5rem 0;color:var(--ink);}
+  ul{margin:.4rem 0 .4rem 1.1rem;padding:0;color:var(--ink);}
+  li{margin:.3rem 0;}
+  .muted{color:var(--muted);}
+  a{color:var(--accent);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:.9rem;display:flex;gap:18px;flex-wrap:wrap;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg class="logo" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <rect x="3" y="3" width="114" height="114" rx="26" fill="#16a34a"/>
+      <circle cx="60" cy="46" r="16" fill="#fff"/>
+      <polygon points="52,60 68,60 72,84 48,84" fill="#fff"/>
+    </svg>
+    <div>
+      <h1>OTPGetr</h1>
+      <p class="tag">A small desktop helper that grabs your one-time verification codes.</p>
+    </div>
+  </header>
+
+  <div class="card">
+    <h2>What it does</h2>
+    <p>OTPGetr runs quietly on your own Windows PC. When a verification code (OTP)
+    arrives in your Gmail, it copies the code to your clipboard and shows a small
+    pop-up so you can paste it — without opening Gmail. That's the whole app.</p>
+  </div>
+
+  <div class="card">
+    <h2>How it uses your Gmail</h2>
+    <ul>
+      <li><strong>Reads only.</strong> It uses Google's official Gmail API only to
+      read your recent messages. It can never send, delete, or change your mail.</li>
+      <li><strong>Only to find codes.</strong> It looks at your most recent messages
+      to extract the verification code, nothing more.</li>
+      <li><strong>Mostly on your device.</strong> Plain-text codes are found locally
+      on your PC. Only when a code is inside an image is that image sent out to be read
+      (see our <a href="privacy.html">Privacy Policy</a>).</li>
+      <li><strong>You stay in control.</strong> Revoke access anytime at
+      <a href="https://myaccount.google.com/permissions">Google Account permissions</a>.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Who it's for</h2>
+    <p>It's a personal utility for individuals who want their login codes handy.
+    It isn't a commercial service and doesn't have accounts, ads, or analytics.</p>
+  </div>
+
+  <footer>
+    <a href="privacy.html">Privacy Policy</a>
+    <a href="terms.html">Terms of Service</a>
+    <span class="muted">Contact: rudnevazat@gmail.com</span>
+  </footer>
+</div>
+</body>
+</html>

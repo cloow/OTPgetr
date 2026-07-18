@@ -1,0 +1,27 @@
+# ── Secrets / personal data — NEVER commit these ─────────────────────────
+# personal copy with the API key hardcoded in it
+OTPgetr_personal.py
+# your Anthropic API key
+api_key.txt
+# your Google OAuth login token
+token.json
+# token age tracking
+token_meta.json
+# your Google OAuth client (client secret)
+credentials.json
+
+# ── Runtime / logs ───────────────────────────────────────────────────────
+otpgetr.log
+otpgetr.log.*
+
+# ── PyInstaller build output ─────────────────────────────────────────────
+build/
+dist/
+*.spec
+
+# ── Python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
