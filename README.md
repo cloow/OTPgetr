@@ -9,7 +9,7 @@ You just **Ctrl+V** (and Enter) into the field. Works for codes in email
 
 Phone SMS codes work too: forward the text to this Gmail with the subject
 **`smsotp`** (via MacroDroid or an Apple Shortcut) and it flows through the same
-pipeline.
+pipeline.  (coming soon)
 
 ## Why this is safe
 - Uses Google's official Gmail API only to read your recent messages. The script
