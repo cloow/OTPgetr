@@ -1,6 +1,6 @@
 # OTPgetr — Gmail Verification Code Grabber
 
-Leave it running. It watches your Gmail, and the moment a **new** verification
+It watches your Gmail, and the moment a **new** verification
 code arrives, it copies the code to your clipboard and shows a green
 **PASTE ME!** popup near your cursor for 5 seconds (it disappears on its own).
 You just **Ctrl+V** (and Enter) into the field. Works for codes in email
