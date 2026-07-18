@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OTPgetr � one-time code helper</title>
+<title>OTPgetr — read one-time verification codes from your Gmail</title>
+<meta name="description" content="OTPgetr is a personal Windows desktop app that reads one-time verification codes (OTPs) from your Gmail and copies them to your clipboard so you can sign in faster.">
 <style>
   :root{
     --bg:#f7f8f7; --card:#ffffff; --ink:#12241a; --muted:#4b5a52;
@@ -21,6 +22,7 @@
   .logo{width:56px;height:56px;flex:none;}
   h1{font-size:1.9rem;margin:0;letter-spacing:-.02em;}
   .tag{color:var(--muted);margin:.2rem 0 0;}
+  .lead{font-size:1.15rem;margin:24px 0 0;color:var(--ink);}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
     padding:24px 26px;margin-top:28px;}
   h2{font-size:1.15rem;margin:0 0 .5rem;letter-spacing:-.01em;}
@@ -44,36 +46,57 @@
     </svg>
     <div>
       <h1>OTPgetr</h1>
-      <p class="tag">A small desktop helper that grabs your one-time verification codes.</p>
+      <p class="tag">A personal Windows desktop app for one-time verification codes.</p>
     </div>
   </header>
 
+  <p class="lead"><strong>The purpose of OTPgetr is to save you the hassle of hunting
+  through your inbox for login codes.</strong> It is a small desktop application that
+  runs on your own Windows PC and uses the Google Gmail API to read the one-time
+  verification codes (OTPs) that arrive in your Gmail, then copies the code to your
+  clipboard and shows a small pop-up so you can paste it into whatever you are signing
+  in to — all without opening Gmail yourself.</p>
+
   <div class="card">
-    <h2>What it does</h2>
-    <p>OTPgetr runs quietly on your own Windows PC. When a verification code (OTP)
-    arrives in your Gmail, it copies the code to your clipboard and shows a small
-    pop-up so you can paste it � without opening Gmail. That's the whole app.</p>
+    <h2>What the app is for</h2>
+    <p>Many websites and apps email you a short numeric code to confirm it's really you.
+    Normally you have to switch to Gmail, open the newest message, read the code, and type
+    it back in. OTPgetr does that step for you:</p>
+    <ul>
+      <li>It watches for the newest verification-code email in your Gmail.</li>
+      <li>It extracts the one-time code from that message.</li>
+      <li>It copies the code to your clipboard and shows a small pop-up.</li>
+      <li>You paste the code and finish signing in — faster, with no inbox digging.</li>
+    </ul>
+    <p>That is the entire purpose of the app. It is a personal convenience utility — not a
+    commercial service. It has no user accounts, no ads, and no analytics.</p>
   </div>
 
   <div class="card">
-    <h2>How it uses your Gmail</h2>
+    <h2>Why it needs access to your Gmail</h2>
+    <p>Reading the verification code <em>is</em> the app's purpose, so it needs permission
+    to read your recent Gmail messages through Google's official Gmail API. Here is exactly
+    how that access is used:</p>
     <ul>
-      <li><strong>Reads only.</strong> It uses Google's official Gmail API only to
-      read your recent messages. It can never send, delete, or change your mail.</li>
-      <li><strong>Only to find codes.</strong> It looks at your most recent messages
-      to extract the verification code, nothing more.</li>
-      <li><strong>Mostly on your device.</strong> Plain-text codes are found locally
-      on your PC. Only when a code is inside an image is that image sent out to be read
-      (see our <a href="privacy.html">Privacy Policy</a>).</li>
-      <li><strong>You stay in control.</strong> Revoke access anytime at
-      <a href="https://myaccount.google.com/permissions">Google Account permissions</a>.</li>
+      <li><strong>Read-only.</strong> OTPgetr requests a read-only Gmail scope. It can
+      never send, delete, label, or modify any of your mail.</li>
+      <li><strong>Only to find codes.</strong> It looks at your most recent messages solely
+      to locate and extract the one-time verification code. It does not store, share, or
+      use your email for any other purpose.</li>
+      <li><strong>Mostly on your own device.</strong> Plain-text codes are detected locally
+      on your PC. Only when a code appears inside an image is that image sent out to be
+      read (details in our <a href="privacy.html">Privacy Policy</a>).</li>
+      <li><strong>You stay in control.</strong> You can revoke OTPgetr's access at any time
+      from your <a href="https://myaccount.google.com/permissions">Google Account
+      permissions</a> page.</li>
     </ul>
   </div>
 
   <div class="card">
     <h2>Who it's for</h2>
-    <p>It's a personal utility for individuals who want their login codes handy.
-    It isn't a commercial service and doesn't have accounts, ads, or analytics.</p>
+    <p>OTPgetr is a personal utility for individuals who frequently receive login codes by
+    email and want them handy without switching to their inbox every time. It is installed
+    and run by the user on their own computer.</p>
   </div>
 
   <footer>
