@@ -65,15 +65,25 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+import spam_review   # verification-vs-spam gate + user filters (removable layer)
+
 # ----------------------------- CONFIG ---------------------------------------
 
 POLL_SECONDS = 4              # how often to check Gmail (fast but light)
 LOOKBACK_MINUTES = 5          # how far back a "new" email can be on each check
 MAX_EMAILS_TO_SCAN = 2        # newest N emails per check (2 is plenty at 4s)
+# Where to look for codes. 'in:anywhere' = Inbox + all tabs + Spam + Trash.
+# Temporarily scanning everything (incl. Trash) to gather more data for the
+# spam filters; switch to "in:anywhere -in:trash" to stop reading Trash again.
+SCAN_SCOPE = "in:anywhere"
 POPUP_SECONDS = 3             # popup on-screen time (auto-dismiss)
 POPUP_AT_CURSOR = True        # True: near mouse cursor. False: top-center.
 TRIGGER_SCAN = 55            # numpad * scan code: force an immediate check
 REAUTH_HOTKEY = "ctrl+alt+r"  # reconnect / refresh Gmail login on demand
+BLOCK_HOTKEY = "ctrl+alt+b"   # blocklist the last copied code (one slipped through)
+KEY_HOTKEY = "ctrl+alt+k"     # open the API-key setup window (add / change / turn off)
+VIEWER_SCAN = 81             # numpad 3 scan code: open the live log viewer (needs Ctrl+Alt held)
+KEY_NUDGE_COOLDOWN_MIN = 30  # min minutes between "no API key" nudges (avoid spam)
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 SINGLE_INSTANCE_PORT = 49731  # localhost port used only to detect a 2nd copy
 # Pre-selects this Google account at login so you skip the "which Gmail?"
@@ -482,6 +492,14 @@ def get_claude_client():
     return _CLIENT
 
 
+def reset_claude_client():
+    """Drop the cached client so the next call re-reads the key. Used after the
+    user adds/changes the key via the Ctrl+Alt+K setup window (or updates the
+    ANTHROPIC_API_KEY env var), so the change takes effect without a restart."""
+    global _CLIENT
+    _CLIENT = None
+
+
 def sniff_media_type(data: bytes) -> str:
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         return "image/png"
@@ -602,9 +620,24 @@ def extract_code_from_message(service, msg_id: str):
 
     headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
     subject = headers.get("subject", "")
+    from_addr = headers.get("from", "")
     trusted = SMS_SUBJECT in subject.lower()   # a forwarded phone SMS
     texts.insert(0, subject + "\n" + msg.get("snippet", ""))
     joined = "\n".join(texts)
+    meta = {"from": from_addr, "subject": subject}
+
+    def accept(code, method):
+        """Final gate before a code is handed back to be copied. Forwarded SMS
+        (smsotp) is inherently trusted and skips review; everything else goes
+        through the blocklist + Claude verification check."""
+        if trusted:
+            return code, method, meta
+        allow, reason = spam_review.screen_candidate(
+            get_claude_client(), code, from_addr, subject, joined)
+        if allow:
+            return code, method, meta
+        log.info("blocked %s from %s — %s", code, from_addr, reason)
+        return None, None, meta
 
     # Waterfall: cheapest/most-private first, cloud only as the last resort.
 
@@ -612,7 +645,7 @@ def extract_code_from_message(service, msg_id: str):
     for t in texts:
         code = find_code_in_text(t, allow_bare=trusted)
         if code:
-            return code, "local regex (text)"
+            return accept(code, "local regex (text)")
 
     # Only work harder if this actually looks like an OTP email.
     looks_like_otp = trusted or bool(KEYWORD_HINT_RE.search(joined))
@@ -621,7 +654,7 @@ def extract_code_from_message(service, msg_id: str):
     if images and looks_like_otp:
         code = ocr_extract_code(images)
         if code:
-            return code, f"Windows OCR ({len(images)} image(s))"
+            return accept(code, f"Windows OCR ({len(images)} image(s))")
 
     # 3) Cloud fallback (Anthropic) — ONLY if a key is configured. With no key
     #    get_claude_client() is False, so this tier is skipped entirely and can
@@ -630,17 +663,153 @@ def extract_code_from_message(service, msg_id: str):
         if images:
             code = claude_extract(images=images, text=joined[:6000])
             if code:
-                return code, f"Claude vision ({len(images)} image(s))"
+                return accept(code, f"Claude vision ({len(images)} image(s))")
         if joined.strip():
             code = claude_extract(text=joined.strip())
             if code:
-                return code, "Claude text fallback"
+                return accept(code, "Claude text fallback")
+
+    # Signal for the listener: this looked like an image-based OTP we couldn't
+    # read locally, and there's no key for the cloud fallback. Lets the listener
+    # nudge the user (rarely) to add a key via Ctrl+Alt+K.
+    if looks_like_otp and images and not _read_api_key():
+        meta["needs_key"] = True
 
     # 4) we cooked.
-    return None, None
+    return None, None, meta
 
 
 # ----------------------------- POPUP -----------------------------------------
+
+class LogViewer:
+    """A lightweight 'console' window that live-tails otpgetr.log so the user can
+    see what OTPGetr is doing without opening a terminal. Opened by the
+    Ctrl+Alt+NUMPAD 3 hotkey. It appends new log lines as they are written (a
+    true tail — no line on every 4s poll), and every 60s prints a dim
+    'waiting.. HH:MM' liveness tick so you can tell it's alive and idle.
+    Auto-scrolls to the newest line unless you've scrolled up to read history."""
+
+    REFRESH_MS = 1000          # how often to pull newly-written log lines
+    WAIT_TICK_MS = 60000       # emit a "waiting.. HH:MM" liveness tick this often
+    INITIAL_TAIL = 60000       # bytes of history to show when the window opens
+
+    def __init__(self, root, log_path, on_close=None):
+        self.log_path = log_path
+        self.on_close = on_close
+        self._pos = 0            # byte offset already shown
+        self._refresh_id = None
+        self._wait_id = None
+
+        win = tk.Toplevel(root)
+        self.win = win
+        win.title("OTPGetr — live log")
+        win.configure(bg="#0c0c0c")
+        win.geometry("900x520")
+        win.minsize(480, 240)
+
+        header = tk.Frame(win, bg="#0c0c0c")
+        header.pack(fill="x", padx=8, pady=(8, 0))
+        tk.Label(header, text="OTPGetr live log", bg="#0c0c0c", fg="#7dd3fc",
+                 font=("Consolas", 9, "bold")).pack(side="left")
+        tk.Button(header, text="Copy log path", font=("Segoe UI", 8),
+                  command=lambda: (root.clipboard_clear(),
+                                   root.clipboard_append(log_path))
+                  ).pack(side="right")
+
+        body = tk.Frame(win, bg="#0c0c0c")
+        body.pack(fill="both", expand=True, padx=8, pady=8)
+        scroll = tk.Scrollbar(body)
+        scroll.pack(side="right", fill="y")
+        self.text = tk.Text(body, bg="#0c0c0c", fg="#d4d4d4", wrap="none",
+                            font=("Consolas", 9), relief="flat", borderwidth=0,
+                            yscrollcommand=scroll.set)
+        self.text.pack(side="left", fill="both", expand=True)
+        scroll.config(command=self.text.yview)
+        # A little colour so it reads like a console.
+        self.text.tag_config("copied", foreground="#4ade80")   # green
+        self.text.tag_config("blocked", foreground="#f87171")  # red
+        self.text.tag_config("warn", foreground="#fbbf24")     # amber
+        self.text.tag_config("wait", foreground="#6b7280")     # dim grey
+
+        self._pos = self._load_initial()
+        win.protocol("WM_DELETE_WINDOW", self.close)
+        self._refresh_id = win.after(self.REFRESH_MS, self._refresh)
+        self._wait_id = win.after(self.WAIT_TICK_MS, self._wait_tick)
+
+    def _append(self, text, tag="auto"):
+        if not text:
+            return
+        at_bottom = self.text.yview()[1] >= 0.999   # keep spot if scrolled up
+        self.text.configure(state="normal")
+        for line in text.splitlines():
+            if tag == "auto":
+                if " copied " in line:
+                    t = "copied"
+                elif " blocked " in line or " user blocked " in line:
+                    t = "blocked"
+                elif "WARNING" in line or "ERROR" in line or "expires" in line:
+                    t = "warn"
+                else:
+                    t = None
+            else:
+                t = tag
+            self.text.insert("end", line + "\n", t)
+        self.text.configure(state="disabled")
+        if at_bottom:
+            self.text.see("end")
+
+    def _load_initial(self):
+        try:
+            size = os.path.getsize(self.log_path)
+            with open(self.log_path, "r", encoding="utf-8", errors="ignore") as f:
+                start = max(0, size - self.INITIAL_TAIL)
+                f.seek(start)
+                if start:
+                    f.readline()            # drop the partial first line
+                self._append(f.read())
+                return f.tell()
+        except FileNotFoundError:
+            self._append("(waiting for otpgetr.log to appear…)\n", "wait")
+            return 0
+        except Exception as e:
+            self._append(f"(could not read log: {e})\n", "wait")
+            return 0
+
+    def _refresh(self):
+        try:
+            size = os.path.getsize(self.log_path)
+            if size < self._pos:            # log rotated / truncated
+                self._pos = 0
+                self._append("— log rotated —\n", "wait")
+            if size > self._pos:
+                with open(self.log_path, "r", encoding="utf-8", errors="ignore") as f:
+                    f.seek(self._pos)
+                    self._append(f.read())
+                    self._pos = f.tell()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+        self._refresh_id = self.win.after(self.REFRESH_MS, self._refresh)
+
+    def _wait_tick(self):
+        self._append("waiting.. " + time.strftime("%H:%M"), "wait")
+        self._wait_id = self.win.after(self.WAIT_TICK_MS, self._wait_tick)
+
+    def close(self):
+        for aid in (self._refresh_id, self._wait_id):
+            if aid is not None:
+                try:
+                    self.win.after_cancel(aid)
+                except Exception:
+                    pass
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        if self.on_close:
+            self.on_close()
+
 
 class PopupApp:
     """Tk root lives in the main thread; other threads send events via queue."""
@@ -649,6 +818,7 @@ class PopupApp:
         self.root = tk.Tk()
         self.root.withdraw()
         self.events = queue.Queue()
+        self.log_viewer = None
         self.root.after(100, self._poll)
 
     def _poll(self):
@@ -658,10 +828,87 @@ class PopupApp:
                 if kind == "quit":
                     self.root.destroy()
                     return
+                if kind == "viewer":
+                    self._show_viewer()
+                    continue
+                if kind == "keysetup":
+                    self._show_key_setup()
+                    continue
                 self._show(text, kind)
         except queue.Empty:
             pass
         self.root.after(100, self._poll)
+
+    def open_viewer(self):
+        """Thread-safe request to open the log viewer (built on the Tk thread)."""
+        self.events.put(("viewer", None))
+
+    def open_key_setup(self):
+        """Thread-safe request (Ctrl+Alt+K) to open the API-key setup window."""
+        self.events.put(("keysetup", None))
+
+    def _show_key_setup(self):
+        """Runtime API-key window: add, change, or turn off the Anthropic key
+        without restarting. Built on the Tk thread. Saves the choice to
+        api_key.txt (empty for env/off), resets the cached client so the change
+        takes effect immediately, and confirms with a toast."""
+        win = tk.Toplevel(self.root)
+        win.title("OTPGetr — API key")
+        win.attributes("-topmost", True)
+
+        use_env, entry = _key_form_widgets(win, "OTPGetr — API key")
+
+        def _apply(persist):
+            try:
+                with open(API_KEY_FILE_LOCAL, "w") as f:
+                    f.write(persist)
+            except Exception as e:
+                log.warning("could not save api_key.txt: %s", e)
+            reset_claude_client()               # re-read the key on next use
+            active = bool(_read_api_key())
+            win.destroy()
+            if active:
+                self._show("API key updated ✓", "ok")
+            else:
+                self._show("Cloud backup off", "warn")
+            log.info("API key %s via %s window.",
+                     "updated" if active else "turned off", KEY_HOTKEY.upper())
+
+        def _save():
+            _apply("" if use_env.get() else entry.get().strip())
+
+        def _turn_off():
+            _apply("")
+
+        bar = tk.Frame(win)
+        bar.pack(pady=(0, 18))
+        tk.Button(bar, text="Save", width=14, command=_save).pack(side="left", padx=8)
+        tk.Button(bar, text="Turn off", width=14, command=_turn_off).pack(side="left", padx=8)
+        win.bind("<Return>", lambda e: _save())
+        win.protocol("WM_DELETE_WINDOW", win.destroy)   # X = cancel, no change
+
+        _center_window(win)
+        win.lift()
+        win.focus_force()
+
+    def _show_viewer(self):
+        # Reuse an already-open viewer instead of stacking copies.
+        if self.log_viewer is not None:
+            try:
+                self.log_viewer.win.deiconify()
+                self.log_viewer.win.lift()
+                self.log_viewer.win.focus_force()
+                return
+            except Exception:
+                self.log_viewer = None
+        try:
+            self.log_viewer = LogViewer(self.root, LOG_FILE,
+                                        on_close=self._viewer_closed)
+        except Exception as e:
+            log.warning("could not open log viewer: %s", e)
+
+    def _viewer_closed(self):
+        self.log_viewer = None
 
     def _show(self, text, kind="ok"):
         win = tk.Toplevel(self.root)
@@ -703,18 +950,20 @@ class Listener:
         self.stats = stats
         self.seen_ids = set()       # message IDs already processed
         self.last_code = None       # avoid re-popping identical back-to-back code
+        self.last_meta = None       # {from, subject} of the last copied code (for block hotkey)
         self.wake = threading.Event()
         self.stop = threading.Event()
         self.needs_reauth = False   # True once the refresh token has expired
         self.warned_expiry = False  # True once we've nudged about upcoming expiry
         self.reauth_lock = threading.Lock()
+        self._last_key_nudge = 0.0  # timestamp of the last "no API key" nudge
 
     def _list_recent_ids(self):
         after_epoch = int(time.time()) - LOOKBACK_MINUTES * 60
-        # 'in:anywhere' includes Spam, Trash, and all category tabs.
+        # Scan Inbox + all tabs + Spam, but NOT Trash (see SCAN_SCOPE).
         resp = (
             self.service.users().messages()
-            .list(userId="me", q=f"in:anywhere after:{after_epoch}",
+            .list(userId="me", q=f"{SCAN_SCOPE} after:{after_epoch}",
                   maxResults=MAX_EMAILS_TO_SCAN)
             .execute()
         )
@@ -791,7 +1040,7 @@ class Listener:
         for mid in reversed(new_ids):
             self.seen_ids.add(mid)
             try:
-                code, method = extract_code_from_message(self.service, mid)
+                code, method, meta = extract_code_from_message(self.service, mid)
             except RefreshError:
                 self.enter_reauth_wait()
                 return
@@ -801,16 +1050,45 @@ class Listener:
                 continue
             if code and code != self.last_code:
                 self.last_code = code
+                self.last_meta = meta
                 self.stats.codes += 1
                 pyperclip.copy(code)
                 self.app.notify("ok", f"PASTE ME!\n{code}")
                 log.info("copied %s  (via %s)", code, method)
+            elif not code and meta.get("needs_key"):
+                self._maybe_key_nudge()
+
+    def _maybe_key_nudge(self):
+        """An image OTP arrived but no key is set for the cloud fallback. Show a
+        quiet, auto-dismissing toast (never steals focus) at most once every
+        KEY_NUDGE_COOLDOWN_MIN minutes, pointing to the Ctrl+Alt+K setup window."""
+        now = time.time()
+        if now - self._last_key_nudge < KEY_NUDGE_COOLDOWN_MIN * 60:
+            return
+        self._last_key_nudge = now
+        self.app.notify("warn", f"Image code needs a key\n{KEY_HOTKEY.upper()} to add one")
+        log.info("nudge: image OTP seen but no API key (%s to add).",
+                 KEY_HOTKEY.upper())
+
+    def block_last_code(self):
+        """Hotkey: a bad code slipped through — add it (and its sender) to the
+        blocklist so it never gets copied again."""
+        if not self.last_code:
+            self.app.notify("warn", "OTPGetr\nnothing to block yet")
+            return
+        meta = self.last_meta or {}
+        spam_review.block_last(self.last_code, meta.get("from", ""),
+                               meta.get("subject", ""))
+        self.app.notify("ok", f"Blocked ✓\n{self.last_code}")
+        log.info("user blocked %s (from %s)", self.last_code, meta.get("from", ""))
 
     def run(self):
         self.seed_baseline()
         log.info("Listening. Checking every %ss. NUMPAD * = check now | "
-                 "CTRL + NUMPAD * = quit | %s = reconnect",
-                 POLL_SECONDS, REAUTH_HOTKEY.upper())
+                 "CTRL + NUMPAD * = quit | %s = reconnect | %s = block last code | "
+                 "%s = API key | CTRL+ALT+NUMPAD 3 = log viewer",
+                 POLL_SECONDS, REAUTH_HOTKEY.upper(), BLOCK_HOTKEY.upper(),
+                 KEY_HOTKEY.upper())
         self.stats.heartbeat(self.seen_ids, self.app.root)   # baseline snapshot
         next_beat = time.time() + HEARTBEAT_MINUTES * 60
         while not self.stop.is_set():
@@ -867,30 +1145,72 @@ def authorize_with_retry():
     return None
 
 
+def _key_form_widgets(parent, heading):
+    """Pack the shared API-key setup widgets (heading, blurb, env checkbox, paste
+    box) into `parent`. Returns (use_env BooleanVar, entry widget) so the caller
+    can wire its own buttons and window lifecycle. Used by both the first-run
+    window and the Ctrl+Alt+K runtime window so they stay identical."""
+    import tkinter as tk
+    env_present = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+
+    tk.Label(parent, text=heading,
+             font=("Segoe UI", 13, "bold")).pack(padx=24, pady=(18, 4))
+    tk.Label(parent, justify="left", font=("Segoe UI", 10), text=(
+        "Optional: give OTPGetr an Anthropic API key.\n\n"
+        "It's only a backup — used to read codes inside images that the built-in\n"
+        "Windows reader can't handle. The app works fully without it.\n\n"
+        "\"Do not use\" turns the backup off and won't ask again."
+    )).pack(padx=24, pady=(0, 8))
+
+    # Checkbox: use the ANTHROPIC_API_KEY environment variable instead of pasting.
+    # Pre-checked when the env var is already set. When ticked, the paste field is
+    # disabled and no key is written to disk — the key is read live from env.
+    use_env = tk.BooleanVar(value=env_present)
+    env_text = ("Use my Windows environment variable  (ANTHROPIC_API_KEY)"
+                + ("   — detected ✓" if env_present
+                   else "   — set it later and it just works"))
+    tk.Checkbutton(parent, text=env_text, variable=use_env,
+                   font=("Segoe UI", 9)).pack(padx=24, anchor="w")
+
+    entry = tk.Entry(parent, width=56, font=("Consolas", 10))
+    entry.pack(padx=24, pady=(6, 14))
+
+    def _sync_entry(*_):
+        # Disable the paste box while "use env" is ticked; re-enable when unticked.
+        entry.configure(state="disabled" if use_env.get() else "normal")
+
+    use_env.trace_add("write", _sync_entry)
+    _sync_entry()
+    if not use_env.get():
+        entry.focus_set()
+    return use_env, entry
+
+
+def _center_window(win, denom_y=3):
+    """Center a Tk window horizontally, upper-third vertically."""
+    win.update_idletasks()
+    w, h = win.winfo_width(), win.winfo_height()
+    x = (win.winfo_screenwidth() - w) // 2
+    y = (win.winfo_screenheight() - h) // denom_y
+    win.geometry(f"+{x}+{y}")
+
+
 def _prompt_api_key() -> str:
-    """Small first-run window asking for the Anthropic key. Returns the entered
-    key (or "" if skipped). Runs its own short-lived Tk root."""
+    """First-run window for the optional Anthropic key. Ticking "use env var"
+    reads ANTHROPIC_API_KEY live (nothing on disk); pasting saves to api_key.txt.
+    Returns the string to persist to api_key.txt: the pasted key, or "" for both
+    the env choice and "Do not use" (empty file = configured, never re-prompt).
+    Runs its own short-lived Tk root."""
     import tkinter as tk
     root = tk.Tk()
     root.title("OTPGetr — Setup")
     root.attributes("-topmost", True)
     out = {"key": ""}
 
-    tk.Label(root, text="OTPGetr — first-time setup",
-             font=("Segoe UI", 13, "bold")).pack(padx=24, pady=(18, 4))
-    tk.Label(root, justify="left", font=("Segoe UI", 10), text=(
-        "Optional: paste your Anthropic API key.\n\n"
-        "It's only a backup — used to read codes inside images that the built-in\n"
-        "Windows reader can't handle. The app works fully without it.\n\n"
-        "\"Do not use\" turns the backup off and won't ask again."
-    )).pack(padx=24, pady=(0, 12))
-
-    entry = tk.Entry(root, width=56, font=("Consolas", 10))
-    entry.pack(padx=24, pady=(0, 14))
-    entry.focus_set()
+    use_env, entry = _key_form_widgets(root, "OTPGetr — first-time setup")
 
     def _save():
-        out["key"] = entry.get().strip()
+        out["key"] = "" if use_env.get() else entry.get().strip()
         root.destroy()
 
     def _dont_use():
@@ -905,11 +1225,7 @@ def _prompt_api_key() -> str:
     # Closing the window (X) counts as "Do not use" so we never re-prompt.
     root.protocol("WM_DELETE_WINDOW", _dont_use)
 
-    root.update_idletasks()
-    w, h = root.winfo_width(), root.winfo_height()
-    x = (root.winfo_screenwidth() - w) // 2
-    y = (root.winfo_screenheight() - h) // 3
-    root.geometry(f"+{x}+{y}")
+    _center_window(root)
     root.mainloop()
     return out["key"]
 
@@ -917,8 +1233,14 @@ def _prompt_api_key() -> str:
 def ensure_api_key():
     """First run only: if no key exists anywhere (env / local file / bundled),
     ask once and save the answer so we never prompt again."""
+    # If ANTHROPIC_API_KEY is already in the environment, the cloud backup is
+    # ready — start straight up, no setup popup, even on the very first run.
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        log.info("ANTHROPIC_API_KEY found in environment — cloud backup ready, "
+                 "skipping setup popup.")
+        return
     if _read_api_key():
-        return                                  # already configured — no prompt
+        return                                  # key in api_key.txt/bundled — no prompt
     if os.path.exists(API_KEY_FILE_LOCAL):
         return                                  # user already chose (even if blank)
     try:
@@ -951,6 +1273,9 @@ def main():
 
     STATS = Stats()
     log.info("=== OTPGetr starting (psutil=%s) ===", _HAVE_PSUTIL)
+
+    # Load the spam-review layer (filters.json + Claude verification gate).
+    spam_review.init(SCRIPT_DIR)
 
     # Lock in the token-age estimate before the first refresh rewrites the file
     # timestamp (only matters for a pre-existing token with no metadata yet).
@@ -987,6 +1312,20 @@ def main():
     # Reconnect on demand — opens Chrome, so it's only ever fired by the user.
     keyboard.add_hotkey(REAUTH_HOTKEY,
                         lambda: threading.Thread(target=listener.reauth_now, daemon=True).start())
+    # Blocklist the last copied code if a bad one slipped through.
+    keyboard.add_hotkey(BLOCK_HOTKEY,
+                        lambda: threading.Thread(target=listener.block_last_code, daemon=True).start())
+    # Add / change / turn off the Anthropic API key (queues onto the Tk thread).
+    keyboard.add_hotkey(KEY_HOTKEY, app.open_key_setup)
+
+    def on_viewer_hotkey():
+        # Only Ctrl+Alt+NUMPAD 3 opens the viewer; a plain NUMPAD 3 is ignored.
+        if keyboard.is_pressed("ctrl") and keyboard.is_pressed("alt"):
+            app.open_viewer()
+
+    # Open the live log viewer ("terminal view") on demand.
+    keyboard.add_hotkey(VIEWER_SCAN,
+                        lambda: threading.Thread(target=on_viewer_hotkey, daemon=True).start())
 
     t = threading.Thread(target=listener.run, daemon=True)
     t.start()

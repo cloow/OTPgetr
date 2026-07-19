@@ -1,0 +1,13 @@
+{
+  "autoDiscovery": true,
+  "stack": {
+    "language": ["python"],
+    "runtime": [],
+    "frameworks": [],
+    "orm": [],
+    "auth": ["oauth"]
+  },
+  "overrides": {},
+  "phaseLogging": true,
+  "securityScan": false
+}

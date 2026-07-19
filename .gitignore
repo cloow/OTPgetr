@@ -1,12 +1,12 @@
 # ── Secrets / personal data — NEVER commit these ─────────────────────────
-# personal copy with the API key hardcoded in it
-OTPgetr_personal.py
-# your Anthropic API key
+# your Anthropic API key (only if you chose the paste option; env var is preferred)
 api_key.txt
 # your Google OAuth login token
 token.json
 # token age tracking
 token_meta.json
+# your personal spam/promo blocklist (senders + codes)
+filters.json
 # your Google OAuth client (client secret)
 credentials.json
 
@@ -25,3 +25,8 @@ __pycache__/
 .venv/
 venv/
 .idea/
+
+# MDD audit reports (ephemeral)
+.mdd/audits/
+# MDD active jobs (ephemeral)
+.mdd/jobs/

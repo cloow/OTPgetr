@@ -62,6 +62,8 @@ First run: your default browser opens, pick your Google account, click Allow. A
 While running:
 - **NUMPAD `*`** — force an immediate check now (optional)
 - **CTRL + NUMPAD `*`** — quit
+- **CTRL + ALT + K** — add, change, or turn off your Anthropic API key
+- **CTRL + ALT + R** — reconnect Gmail | **CTRL + ALT + B** — block the last code
 
 ## Tweaks (top of OTPgetr.py)
 - `POPUP_SECONDS` — popup duration (default 5)
